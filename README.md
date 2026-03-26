@@ -23,9 +23,10 @@ ResearchBridge AI is a specialized research tool designed to bridge the gap betw
 ## 🛠️ Installation & Setup
 
 ### Prerequisites
-* [Ollama](https://ollama.com/) (with `qwen2.5:8b` pulled)
-* [Neo4j Desktop](https://neo4j.com/download/) (Local DBMS running)
-* Node.js & Python 3.11+
+* **Ollama:** Running locally (Model: `qwen3:8b` or `qwen2.5:8b`)
+* **GPU:** Recommended (Optimized for NVIDIA RTX 40-series)
+* **Neo4j Desktop:** Local DBMS Active
+* **Node.js & Python 3.11+**
 
 ### 1. Backend Setup (Tier 2)
 ```bash
