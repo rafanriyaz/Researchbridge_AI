@@ -1,0 +1,4 @@
+Neo4j auraDB
+
+username:b839d427
+password: V-JguRXqxHHGqD7ygRMIFuXdI6OdAcYNXbNp11X6TlQ

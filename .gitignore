@@ -1,0 +1,15 @@
+# Ignore Python virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Ignore React dependencies
+node_modules/
+dist/
+
+# Ignore private configuration
+.env
+
+# Ignore OS specific files
+.DS_Store
+Thumbs.db
