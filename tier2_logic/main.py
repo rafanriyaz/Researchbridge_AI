@@ -43,6 +43,9 @@ class IngestRequest(BaseModel):
     query: str
     max_results: int = 1
 
+class ChatRequest(BaseModel):
+    message: str
+
 def fetch_arxiv_data(search_query: str, max_results: int):
     print(f"-> STEP 1: Fetching {max_results} papers from arXiv for '{search_query}'...")
     url = f"http://export.arxiv.org/api/query?search_query=all:{search_query}&start=0&max_results={max_results}"
@@ -231,3 +234,66 @@ async def get_knowledge_map():
     except Exception as e:
         print(f"Graph Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+@app.post("/api/v1/chat")
+async def chat_with_graph(req: ChatRequest):
+    print(f"-> Received chat question: {req.message}")
+    
+    # 1. RETRIEVE: Pull the current context from Neo4j
+    # For Day 3, we will grab the limitations and conclusions of up to 10 recent papers in the graph
+    neo4j_query = """
+    MATCH (p:Paper)
+    RETURN p.title AS title, p.limitations AS limitations, p.conclusion AS conclusion
+    LIMIT 10
+    """
+    
+    context_blocks = []
+    try:
+        with driver.session() as session:
+            result = session.run(neo4j_query)
+            for record in result:
+                context_blocks.append(
+                    f"Paper: {record['title']}\n"
+                    f"Limitations: {record['limitations']}\n"
+                    f"Conclusion: {record['conclusion']}\n"
+                )
+    except Exception as e:
+        print(f"Database Error during chat: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve graph context.")
+
+    if not context_blocks:
+        return {"reply": "I don't have any papers in my Knowledge Map yet. Please search and ingest some papers first!"}
+
+    compiled_context = "\n---\n".join(context_blocks)
+
+    # 2. AUGMENT: Build the prompt for Qwen
+    system_prompt = f"""You are ResearchBridge AI, an academic research assistant. 
+Your goal is to answer the user's question STRICTLY based on the provided context from our database.
+If the answer is not in the context, say "I don't have enough information in the current graph to answer that."
+Do not use outside knowledge.
+
+CONTEXT (Recent Papers in Database):
+{compiled_context}
+
+USER QUESTION:
+{req.message}
+"""
+
+    # 3. GENERATE: Send to local Ollama
+    try:
+        ollama_payload = {
+            "model": "qwen3:8b", # Match your exact local tag
+            "prompt": system_prompt,
+            "stream": False,
+            "options": {"temperature": 0.2} # Keep it highly factual
+        }
+        
+        print("-> Sending context to Ollama for synthesis...")
+        response = requests.post("http://localhost:11434/api/generate", json=ollama_payload)
+        response.raise_for_status()
+        
+        reply_text = response.json().get("response", "Error generating response.")
+        return {"reply": reply_text}
+        
+    except requests.exceptions.RequestException as e:
+        print(f"Ollama Error: {e}")
+        raise HTTPException(status_code=500, detail="Local LLM is currently unreachable.")
