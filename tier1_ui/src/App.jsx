@@ -10,6 +10,11 @@ function App() {
   const [error, setError] = useState('');
   const graphRef = useRef();
 
+  // --- NEW HIGHLIGHT STATE (Day 5) ---
+  const [highlightNodes, setHighlightNodes] = useState(new Set());
+  const [highlightLinks, setHighlightLinks] = useState(new Set());
+  const [hoverNode, setHoverNode] = useState(null);
+
   // --- NEW CHAT STATE ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
@@ -19,6 +24,9 @@ function App() {
   ]);
   const chatEndRef = useRef(null);
 
+  // Add this right under your chat states:
+  const [selectedPaper, setSelectedPaper] = useState(null);
+  const [loadingDetails, setLoadingDetails] = useState(false);
   // Auto-scroll chat to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -69,6 +77,7 @@ function App() {
   };
 
   // --- NEW CHAT LOGIC ---
+// --- UPDATED CHAT LOGIC ---
   const handleChatSubmit = async (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -82,7 +91,11 @@ function App() {
       const response = await fetch('http://localhost:8000/api/v1/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: userMessage }),
+        body: JSON.stringify({ 
+          message: userMessage,
+          // NEW: Send the active paper ID if the Inspector panel is open!
+          active_paper_id: selectedPaper ? selectedPaper.arxiv_id : null 
+        }),
       });
       
       if (!response.ok) throw new Error('Chat failed');
@@ -94,7 +107,6 @@ function App() {
       setIsChatting(false);
     }
   };
-
   return (
     <div className="min-h-screen bg-slate-50 p-8 font-sans text-slate-900 pb-24">
       <div className="max-w-6xl mx-auto">
@@ -144,25 +156,92 @@ function App() {
                     ref={graphRef}
                     graphData={graphData}
                     nodeRelSize={6}
-                    linkColor={() => '#94a3b8'}
-                    linkWidth={1.5}
+                    
+                    // --- 1. DYNAMIC LINK COLORING ---
+                    linkColor={(link) => highlightLinks.has(link) ? '#f59e0b' : (hoverNode ? 'rgba(148, 163, 184, 0.1)' : '#94a3b8')}
+                    linkWidth={(link) => highlightLinks.has(link) ? 3 : 1.5}
                     linkDirectionalArrowLength={3}
                     linkDirectionalArrowRelPos={1}
                     width={1100} 
                     height={500}
-                    onNodeClick={(node) => {
-                      if (node.group === 'Paper') window.open(`https://arxiv.org/abs/${node.id || node.name}`, '_blank');
-                      else if (node.group === 'Author') window.open(`https://scholar.google.com/scholar?q=${node.name}`, '_blank');
+                    nodeLabel="name" 
+                    
+                    // --- 2. THE HOVER LOGIC ---
+                    onNodeHover={(node) => {
+                      setHighlightNodes(new Set());
+                      setHighlightLinks(new Set());
+                      
+                      if (node) {
+                        const newHighlightNodes = new Set([node]);
+                        const newHighlightLinks = new Set();
+                        
+                        // Find all links connected to this node
+                        graphData.links.forEach(link => {
+                          if (link.source === node || link.target === node) {
+                            newHighlightLinks.add(link);
+                            newHighlightNodes.add(link.source === node ? link.target : link.source);
+                          }
+                        });
+
+                        setHighlightNodes(newHighlightNodes);
+                        setHighlightLinks(newHighlightLinks);
+                      }
+                      
+                      setHoverNode(node || null);
                     }}
+
+                    onNodeClick={async (node) => {
+                      if (node.group === 'Paper') {
+                        setLoadingDetails(true);
+                        try {
+                          const targetId = node.arxiv_id; 
+                          if (!targetId) return;
+
+                          const res = await fetch(`http://localhost:8000/api/v1/paper/${targetId}`);
+                          if (res.ok) {
+                            const data = await res.json();
+                            setSelectedPaper(data);
+                          }
+                        } catch (err) {
+                          console.error("Failed to fetch paper details", err);
+                        } finally {
+                          setLoadingDetails(false);
+                        }
+                      } else if (node.group === 'Author') {
+                        const searchUrl = `https://scholar.google.com/scholar?q=${encodeURIComponent(node.name)}`;
+                        window.open(searchUrl, '_blank');
+                      }
+                    }}
+                    
+                    // --- 3. DYNAMIC NODE RENDERING ---
                     nodeCanvasObject={(node, ctx, globalScale) => {
+                      // Check if we should dim this node
+                      const isHighlighted = hoverNode ? highlightNodes.has(node) : true;
+                      
+                      // Set opacity based on highlight state
+                      ctx.globalAlpha = isHighlighted ? 1 : 0.15;
+
                       const label = node.name.length > 20 ? node.name.substring(0, 20) + "..." : node.name;
                       const fontSize = 14 / globalScale;
+                      
                       ctx.font = `${fontSize}px Inter, Sans-Serif`;
                       ctx.fillStyle = getNodeColor(node);
-                      ctx.beginPath(); ctx.arc(node.x, node.y, 6, 0, 2 * Math.PI, false); ctx.fill();
-                      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'; ctx.fillText(label, node.x, node.y + 12);
-                      ctx.fillStyle = '#1e293b'; ctx.fillText(label, node.x, node.y + 12);
+                      ctx.beginPath(); 
+                      
+                      // Make hovered nodes slightly larger
+                      const radius = node === hoverNode ? 8 : 6;
+                      ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false); 
+                      ctx.fill();
+                      
+                      ctx.textAlign = 'center'; 
+                      ctx.textBaseline = 'middle';
+                      ctx.fillStyle = 'rgba(255, 255, 255, 0.8)'; 
+                      ctx.fillText(label, node.x, node.y + (radius + 6));
+                      ctx.fillStyle = '#1e293b'; 
+                      ctx.fillText(label, node.x, node.y + (radius + 6));
+
+                      // Reset alpha so it doesn't mess up the rest of the canvas
+                      ctx.globalAlpha = 1;
                     }}
                     onEngineStop={() => graphRef.current?.zoomToFit(400)}
                 />
@@ -173,7 +252,74 @@ function App() {
             )}
         </div>
       </div>
+      {/* --- TLC INSPECTOR SIDE PANEL --- */}
+      {selectedPaper && (
+        <div className="fixed inset-y-0 right-0 w-full md:w-[500px] bg-white shadow-2xl border-l border-slate-200 z-40 transform transition-transform duration-300 ease-in-out flex flex-col">
+          {/* Header */}
+          <div className="p-6 bg-slate-50 border-b border-slate-200 flex justify-between items-start">
+            <div>
+              <span className="inline-block px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-bold rounded mb-2">
+                arXiv: {selectedPaper.arxiv_id}
+              </span>
+              <h2 className="text-xl font-bold text-slate-800 leading-tight">
+                {selectedPaper.title}
+              </h2>
+            </div>
+            <button 
+              onClick={() => setSelectedPaper(null)}
+              className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-200 rounded-full transition-colors"
+            >
+              ✕
+            </button>
+          </div>
 
+          {/* Scrollable Content */}
+          <div className="flex-1 overflow-y-auto p-6 space-y-6">
+            
+            {/* White Space / Limitations (Highlighted deliberately) */}
+            <div className="p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg">
+              <h3 className="text-amber-800 font-bold mb-2 flex items-center">
+                <span className="mr-2">⚠️</span> Extracted White Space (Limitations)
+              </h3>
+              <p className="text-sm text-slate-700 leading-relaxed">
+                {selectedPaper.limitations}
+              </p>
+            </div>
+
+            {/* Theory */}
+            <div>
+              <h3 className="text-indigo-800 font-bold border-b border-slate-100 pb-2 mb-2">
+                Theory / Methodology
+              </h3>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                {selectedPaper.theory}
+              </p>
+            </div>
+
+            {/* Conclusion */}
+            <div>
+              <h3 className="text-emerald-800 font-bold border-b border-slate-100 pb-2 mb-2">
+                Conclusion
+              </h3>
+              <p className="text-sm text-slate-600 leading-relaxed">
+                {selectedPaper.conclusion}
+              </p>
+            </div>
+
+            {/* Action Buttons */}
+            <div className="pt-4 border-t border-slate-100">
+              <a 
+                href={`https://arxiv.org/abs/${selectedPaper.arxiv_id}`} 
+                target="_blank" 
+                rel="noreferrer"
+                className="inline-block w-full text-center px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 text-sm font-medium transition-colors"
+              >
+                Read Full Paper on arXiv
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
       {/* --- FLOATING CHAT WIDGET --- */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
         {/* Chat Window */}

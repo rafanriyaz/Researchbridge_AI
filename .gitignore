@@ -1,15 +1,18 @@
-# Ignore Python virtual environment
-.venv/
+# --- Python / FastAPI Backend ---
 __pycache__/
-*.pyc
-
-# Ignore React dependencies
-node_modules/
-dist/
-
-# Ignore private configuration
+*.py[cod]
+*$py.class
+venv/
+env/
+.venv/
 .env
 
-# Ignore OS specific files
+# --- Node / React Frontend ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# --- OS / Misc ---
 .DS_Store
 Thumbs.db
