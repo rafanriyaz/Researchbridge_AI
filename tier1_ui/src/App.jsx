@@ -10,12 +10,12 @@ function App() {
   const [error, setError] = useState('');
   const graphRef = useRef();
 
-  // --- NEW HIGHLIGHT STATE (Day 5) ---
+  // --- HIGHLIGHT STATE ---
   const [highlightNodes, setHighlightNodes] = useState(new Set());
   const [highlightLinks, setHighlightLinks] = useState(new Set());
   const [hoverNode, setHoverNode] = useState(null);
 
-  // --- NEW CHAT STATE ---
+  // --- CHAT STATE ---
   const [chatOpen, setChatOpen] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [isChatting, setIsChatting] = useState(false);
@@ -24,34 +24,27 @@ function App() {
   ]);
   const chatEndRef = useRef(null);
 
-  // Add this right under your chat states:
   const [selectedPaper, setSelectedPaper] = useState(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
+  
   // Auto-scroll chat to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
-  // --- EXISTING LOGIC ---  added fallbacks and error handling to make it more robust for demos
-const fetchGraph = async () => {
+  const fetchGraph = async () => {
     try {
       const res = await fetch('http://localhost:8000/api/v1/graph');
-      
-      // 1. If the backend throws a 500, immediately jump to the catch block
       if (!res.ok) throw new Error(`Backend error: ${res.status}`);
-      
       const data = await res.json();
       
-      // 2. Double-check that the data actually has nodes and links before saving
       if (data && data.nodes && data.links) {
         setGraphData(data);
       } else {
         setGraphData({ nodes: [], links: [] });
       }
-      
     } catch (err) {
       console.error("Failed to load graph:", err);
-      // 3. Fallback: Reset to an empty graph so the UI doesn't crash
       setGraphData({ nodes: [], links: [] });
     }
   };
@@ -80,8 +73,7 @@ const fetchGraph = async () => {
     }
   };
 
-const handleClearGraph = async () => {
-    // Built-in browser confirmation so you don't accidentally click it during a demo
+  const handleClearGraph = async () => {
     if (!window.confirm("Are you sure you want to delete all papers? This cannot be undone.")) return;
     
     setLoading(true);
@@ -92,7 +84,6 @@ const handleClearGraph = async () => {
       
       if (!response.ok) throw new Error('Failed to clear database');
       
-      // Reset all UI states to empty
       setGraphData({ nodes: [], links: [] });
       setResults([]);
       setSelectedPaper(null);
@@ -116,8 +107,6 @@ const handleClearGraph = async () => {
     }
   };
 
-  // --- NEW CHAT LOGIC ---
-// --- UPDATED CHAT LOGIC ---
   const handleChatSubmit = async (e) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
@@ -133,8 +122,8 @@ const handleClearGraph = async () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           message: userMessage,
-          // NEW: Send the active paper ID if the Inspector panel is open!
-          active_paper_id: selectedPaper ? selectedPaper.arxiv_id : null 
+          // CLEANED: References paper_id instead of arxiv_id
+          active_paper_id: selectedPaper ? selectedPaper.paper_id : null 
         }),
       });
       
@@ -147,6 +136,7 @@ const handleClearGraph = async () => {
       setIsChatting(false);
     }
   };
+
   return (
     <div className="min-h-screen bg-slate-50 p-8 font-sans text-slate-900 pb-24">
       <div className="max-w-6xl mx-auto">
@@ -161,7 +151,7 @@ const handleClearGraph = async () => {
           </p>
         </header>
 
-{/* SEARCH FORM */}
+        {/* SEARCH FORM */}
         <form onSubmit={handleSearch} className="flex gap-4 max-w-3xl mx-auto mb-8">
           <input
             type="text"
@@ -179,7 +169,6 @@ const handleClearGraph = async () => {
             {loading ? 'Synthesizing...' : 'Discover gaps'}
           </button>
           
-          {/* NEW CLEAR BUTTON */}
           <button
             type="button"
             onClick={handleClearGraph}
@@ -207,8 +196,6 @@ const handleClearGraph = async () => {
                     ref={graphRef}
                     graphData={graphData}
                     nodeRelSize={6}
-                    
-                    // --- 1. DYNAMIC LINK COLORING ---
                     linkColor={(link) => highlightLinks.has(link) ? '#f59e0b' : (hoverNode ? 'rgba(148, 163, 184, 0.1)' : '#94a3b8')}
                     linkWidth={(link) => highlightLinks.has(link) ? 3 : 1.5}
                     linkDirectionalArrowLength={3}
@@ -217,7 +204,6 @@ const handleClearGraph = async () => {
                     height={500}
                     nodeLabel="name" 
                     
-                    // --- 2. THE HOVER LOGIC ---
                     onNodeHover={(node) => {
                       setHighlightNodes(new Set());
                       setHighlightLinks(new Set());
@@ -226,7 +212,6 @@ const handleClearGraph = async () => {
                         const newHighlightNodes = new Set([node]);
                         const newHighlightLinks = new Set();
                         
-                        // Find all links connected to this node
                         graphData.links.forEach(link => {
                           if (link.source === node || link.target === node) {
                             newHighlightLinks.add(link);
@@ -245,7 +230,8 @@ const handleClearGraph = async () => {
                       if (node.group === 'Paper') {
                         setLoadingDetails(true);
                         try {
-                          const targetId = node.arxiv_id; 
+                          // CLEANED: Look for paper_id instead of arxiv_id
+                          const targetId = node.paper_id; 
                           if (!targetId) return;
 
                           const res = await fetch(`http://localhost:8000/api/v1/paper/${targetId}`);
@@ -264,12 +250,8 @@ const handleClearGraph = async () => {
                       }
                     }}
                     
-                    // --- 3. DYNAMIC NODE RENDERING ---
                     nodeCanvasObject={(node, ctx, globalScale) => {
-                      // Check if we should dim this node
                       const isHighlighted = hoverNode ? highlightNodes.has(node) : true;
-                      
-                      // Set opacity based on highlight state
                       ctx.globalAlpha = isHighlighted ? 1 : 0.15;
 
                       const label = node.name.length > 20 ? node.name.substring(0, 20) + "..." : node.name;
@@ -279,7 +261,6 @@ const handleClearGraph = async () => {
                       ctx.fillStyle = getNodeColor(node);
                       ctx.beginPath(); 
                       
-                      // Make hovered nodes slightly larger
                       const radius = node === hoverNode ? 8 : 6;
                       ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI, false); 
                       ctx.fill();
@@ -291,7 +272,6 @@ const handleClearGraph = async () => {
                       ctx.fillStyle = '#1e293b'; 
                       ctx.fillText(label, node.x, node.y + (radius + 6));
 
-                      // Reset alpha so it doesn't mess up the rest of the canvas
                       ctx.globalAlpha = 1;
                     }}
                     onEngineStop={() => graphRef.current?.zoomToFit(400)}
@@ -303,14 +283,15 @@ const handleClearGraph = async () => {
             )}
         </div>
       </div>
+
       {/* --- TLC INSPECTOR SIDE PANEL --- */}
       {selectedPaper && (
         <div className="fixed inset-y-0 right-0 w-full md:w-[500px] bg-white shadow-2xl border-l border-slate-200 z-40 transform transition-transform duration-300 ease-in-out flex flex-col">
-          {/* Header */}
           <div className="p-6 bg-slate-50 border-b border-slate-200 flex justify-between items-start">
             <div>
               <span className="inline-block px-2 py-1 bg-indigo-100 text-indigo-700 text-xs font-bold rounded mb-2">
-                arXiv: {selectedPaper.arxiv_id}
+                {/* CLEANED: Name changed to OpenAlex */}
+                OpenAlex ID: {selectedPaper.paper_id}
               </span>
               <h2 className="text-xl font-bold text-slate-800 leading-tight">
                 {selectedPaper.title}
@@ -324,10 +305,7 @@ const handleClearGraph = async () => {
             </button>
           </div>
 
-          {/* Scrollable Content */}
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
-            
-            {/* White Space / Limitations (Highlighted deliberately) */}
             <div className="p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg">
               <h3 className="text-amber-800 font-bold mb-2 flex items-center">
                 <span className="mr-2">⚠️</span> Extracted White Space (Limitations)
@@ -337,7 +315,6 @@ const handleClearGraph = async () => {
               </p>
             </div>
 
-            {/* Theory */}
             <div>
               <h3 className="text-indigo-800 font-bold border-b border-slate-100 pb-2 mb-2">
                 Theory / Methodology
@@ -347,7 +324,6 @@ const handleClearGraph = async () => {
               </p>
             </div>
 
-            {/* Conclusion */}
             <div>
               <h3 className="text-emerald-800 font-bold border-b border-slate-100 pb-2 mb-2">
                 Conclusion
@@ -357,23 +333,23 @@ const handleClearGraph = async () => {
               </p>
             </div>
 
-            {/* Action Buttons */}
             <div className="pt-4 border-t border-slate-100">
+              {/* CLEANED: Dynamically links to the OpenAlex database */}
               <a 
-                href={`https://arxiv.org/abs/${selectedPaper.arxiv_id}`} 
+                href={`https://openalex.org/${selectedPaper.paper_id}`} 
                 target="_blank" 
                 rel="noreferrer"
                 className="inline-block w-full text-center px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 text-sm font-medium transition-colors"
               >
-                Read Full Paper on arXiv
+                Read Paper Details on OpenAlex
               </a>
             </div>
           </div>
         </div>
       )}
+
       {/* --- FLOATING CHAT WIDGET --- */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end">
-        {/* Chat Window */}
         {chatOpen && (
           <div className="bg-white border border-slate-200 shadow-2xl rounded-2xl w-80 sm:w-96 h-[500px] mb-4 flex flex-col overflow-hidden transition-all">
             <div className="bg-indigo-600 text-white p-4 font-bold flex justify-between items-center">
@@ -419,7 +395,6 @@ const handleClearGraph = async () => {
           </div>
         )}
 
-        {/* Chat Toggle Button */}
         <button
           onClick={() => setChatOpen(!chatOpen)}
           className="bg-indigo-600 hover:bg-indigo-700 text-white rounded-full p-4 shadow-xl transition-transform hover:scale-105 focus:outline-none"

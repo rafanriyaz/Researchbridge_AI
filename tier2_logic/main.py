@@ -1,18 +1,15 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware  # <-- THIS IS THE MISSING PIECE
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from neo4j import GraphDatabase
 from dotenv import load_dotenv
-import requests
-import xml.etree.ElementTree as ET
 import json
 import os
 from typing import Optional
-import time
 import random
 import requests
-import xml.etree.ElementTree as ET
-import urllib.parse # formats spaces in search query
+import urllib.parse
+import re
 
 load_dotenv()
 
@@ -30,18 +27,20 @@ app.add_middleware(
 
 # --- DATABASE CONFIGURATION ---
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://127.0.0.1:7687")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "admin123") # Update fallback if needed
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "admin123")
 NEO4J_USER = "neo4j"
 
 print(f"--- INITIALIZING ---")
 print(f"Target Database URI: {NEO4J_URI}")
 
-API_CACHE = {}  # Simple in-memory cache for API responses (can be expanded later)
+OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY")
+if not OPENALEX_API_KEY:
+    print("CRITICAL WARNING: No OpenAlex API key found in environment variables. Live data fetching will be unavailable.")
 
-# Initialize Database Driver
+API_CACHE = {}
+
 try:
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
-    # Test connection on startup
     driver.verify_connectivity()
     print("SUCCESS: Connected to Local Neo4j Desktop!")
 except Exception as e:
@@ -51,79 +50,86 @@ class IngestRequest(BaseModel):
     query: str
     max_results: int = 1
 
-class ChatRequest(BaseModel):
-    message: str
+def decode_abstract(inverted_index):
+    if not inverted_index: 
+        return ""
+    word_index = []
+    for word, positions in inverted_index.items():
+        for pos in positions:
+            word_index.append((pos, word))
+    word_index.sort(key=lambda x: x[0])
+    return " ".join([word for pos, word in word_index])
 
-def fetch_arxiv_data(search_query: str, max_results: int):
-    print(f"\n-> STEP 1: Attempting LIVE fetch for: '{search_query}'...")
+def fetch_openalex_data(search_query: str, max_results: int):
+    cache_key = f"{search_query.lower()}_{max_results}"
     
-    # 1. Safely encode the search query (turns "neural networks" into "neural%20networks")
+    if cache_key in API_CACHE:
+        cached_item = API_CACHE[cache_key]
+        print(f"\n-> CACHE HIT (🟢 {cached_item['type'].upper()} DATA): Loading '{search_query}' from memory.")
+        return cached_item["data"]
+
+    print(f"\n-> CACHE MISS: Attempting LIVE OpenAlex fetch for '{search_query}'...")
     safe_query = urllib.parse.quote(search_query)
-    url = f"http://export.arxiv.org/api/query?search_query=all:{safe_query}&start=0&max_results={max_results}"
     
-    # 2. Revert to the Polite Academic Header (Replace with your actual email)
-    headers = {
-        'User-Agent': 'ResearchBridgeAI/1.0 (mailto:rafanriyazmain@gmail.com)'
-    }
+    url = f"https://api.openalex.org/works?search={safe_query}&per-page={max_results}&api_key={OPENALEX_API_KEY}"
     
     try:
-        # 3. Increase the timeout to 30 seconds to give arXiv time to think
-        time.sleep(2)
-        response = requests.get(url, headers=headers, timeout=30)
+        response = requests.get(url, timeout=15)
         
-        # IF IT WORKS: Parse the real data
         if response.status_code == 200:
-            root = ET.fromstring(response.content)
-            namespace = {'atom': 'http://www.w3.org/2005/Atom'}
+            data = response.json()
             papers = []
-            for entry in root.findall('atom:entry', namespace):
+            
+            for item in data.get('results', []):
+                abstract_inv = item.get('abstract_inverted_index')
+                if not abstract_inv:
+                    continue
+                    
+                abstract_text = decode_abstract(abstract_inv)
+                
+                authors = []
+                for authorship in item.get('authorships', []):
+                    name = authorship.get('author', {}).get('display_name')
+                    if name: authors.append(name)
+
                 paper = {
-                    "arxiv_id": entry.find('atom:id', namespace).text.split('/')[-1],
-                    "title": entry.find('atom:title', namespace).text.replace('\n', ' ').strip(),
-                    "abstract": entry.find('atom:summary', namespace).text.replace('\n', ' ').strip(),
-                    "authors": [author.find('atom:name', namespace).text for author in entry.findall('atom:author', namespace)]
+                    "paper_id": item.get('id', '').split('/')[-1],
+                    "title": item.get('title', 'Unknown Title'),
+                    "abstract": abstract_text,
+                    "authors": authors[:3] 
                 }
                 papers.append(paper)
             
             if papers:
-                print("-> SUCCESS: Live arXiv data retrieved!")
+                print(f"-> SUCCESS: Retrieved {len(papers)} live papers from OpenAlex!")
+                API_CACHE[cache_key] = {"type": "live", "data": papers}
                 return papers
-        
-        print(f"-> WARNING: arXiv returned Status {response.status_code}.")
+                
+        print(f"-> WARNING: OpenAlex returned Status {response.status_code}.")
             
     except Exception as e:
         print(f"-> WARNING: Network error ({e}).")
-    # ==========================================
-    # 2. THE OFFLINE FALLBACK PROJECT (Failsafe)
-    # ==========================================
+
     print(f"-> FAILOVER ACTIVE: Synthesizing proxy data for '{search_query}'...")
     
-    authors_list = ["Dr. Alan Turing", "Grace Hopper", "Ada Lovelace", "John von Neumann", "Claude Shannon", "Margaret Hamilton"]
+    authors_list = ["Dr. Alan Turing", "Grace Hopper", "Ada Lovelace", "John von Neumann", "Claude Shannon"]
     mock_papers = []
     
     for i in range(max_results):
-        fake_id = f"2603.{random.randint(10000, 99999)}"
-        prefixes = ["A Novel Approach to", "Optimizing", "Decentralized", "A Comparative Study of", "Next-Generation"]
-        suffixes = ["Systems", "Architectures", "in Modern Environments", "using Graph Networks", "Frameworks"]
-        
-        title = f"{random.choice(prefixes)} {search_query.title()} {random.choice(suffixes)}"
-        abstract = (
-            f"This paper investigates the role of {search_query} within contemporary academic frameworks. "
-            f"By analyzing recent advancements, we propose a multi-tier orchestration model. "
-            f"While our methodology demonstrates a {random.randint(15, 45)}% improvement in computational efficiency, "
-            f"limitations remain regarding the integration of {search_query} at scale without GPU bottlenecks. "
-            f"Ultimately, this study provides a foundational white space for future bibliometric mapping."
-        )
+        fake_id = f"W{random.randint(1000000000, 9999999999)}"
+        title = f"Advances in {search_query.title()} Architectures"
+        abstract = f"This paper investigates {search_query}. We propose a new multi-tier orchestration model. Limitations remain regarding scaling without GPU bottlenecks. Ultimately, this provides a white space for future mapping."
         
         mock_papers.append({
-            "arxiv_id": fake_id,
+            "paper_id": fake_id,
             "title": title,
             "abstract": abstract,
             "authors": random.sample(authors_list, 2)
         })
-        
-    print(f"-> FAILOVER SUCCESS: Generated {len(mock_papers)} synthesized papers to keep the pipeline alive.")
+    
+    API_CACHE[cache_key] = {"type": "mock", "data": mock_papers}
     return mock_papers
+
 def extract_tlc_with_ollama(abstract: str):
     print(f"-> STEP 2: Sending abstract to local Ollama (Qwen)...")
     ollama_url = "http://localhost:11434/api/generate"
@@ -146,7 +152,7 @@ def extract_tlc_with_ollama(abstract: str):
     }
     
     try:
-        response = requests.post(ollama_url, json=payload, timeout=120) # 2 min timeout for GPU processing
+        response = requests.post(ollama_url, json=payload, timeout=120)
         response.raise_for_status()
         
         result_text = response.json().get("response", "{}")
@@ -162,9 +168,9 @@ def extract_tlc_with_ollama(abstract: str):
          raise Exception(f"Ollama Extraction Error: {e}")
 
 def save_to_neo4j(paper, tlc_data, keyword):
-    print(f"-> STEP 3: Saving {paper['arxiv_id']} to Neo4j Desktop...")
+    print(f"-> STEP 3: Saving {paper['paper_id']} to Neo4j Desktop...")
     query = """
-    MERGE (p:Paper {arxiv_id: $arxiv_id})
+    MERGE (p:Paper {paper_id: $paper_id})
     SET p.title = $title,
         p.abstract = $abstract,
         p.theory = $theory,
@@ -181,7 +187,7 @@ def save_to_neo4j(paper, tlc_data, keyword):
     """
     
     parameters = {
-        "arxiv_id": paper["arxiv_id"],
+        "paper_id": paper["paper_id"],
         "title": paper["title"],
         "abstract": paper["abstract"],
         "authors": paper["authors"],
@@ -202,7 +208,7 @@ def save_to_neo4j(paper, tlc_data, keyword):
 async def ingest_papers(request: IngestRequest):
     print(f"\n========== NEW INGESTION REQUEST ==========")
     try:
-        papers = fetch_arxiv_data(request.query, request.max_results)
+        papers = fetch_openalex_data(request.query, request.max_results)
         
         results = []
         for paper in papers:
@@ -210,7 +216,7 @@ async def ingest_papers(request: IngestRequest):
             save_to_neo4j(paper, tlc_data, request.query)
             
             results.append({
-                "arxiv_id": paper["arxiv_id"],
+                "paper_id": paper["paper_id"],
                 "status": "Ingested successfully",
                 "extracted_tlc": tlc_data
             })
@@ -221,8 +227,8 @@ async def ingest_papers(request: IngestRequest):
     except Exception as e:
         print(f"========== PIPELINE CRASHED ==========")
         print(f"Detailed Error: {e}")
-        # This sends the error message back to the Swagger UI response body
         raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/api/v1/graph")
 async def get_knowledge_map():
     print("-> Fetching Knowledge Map for UI...")
@@ -240,32 +246,28 @@ async def get_knowledge_map():
             links = []
             
             for record in result:
-                # 1. Process Source Node
                 n = record["n"]
                 if n is not None:
                     n_id = str(getattr(n, "element_id", getattr(n, "id", None)))
                     if n_id not in nodes_dict:
                         labels = list(n.labels)
                         label = labels[0] if labels else "Unknown"
-                        name = n.get("title") or n.get("name") or n.get("arxiv_id") or "Node"
-                        arxiv_id = n.get("arxiv_id") 
-                        nodes_dict[n_id] = {"id": n_id, "group": label, "name": name, "arxiv_id": arxiv_id}
+                        name = n.get("title") or n.get("name") or n.get("paper_id") or "Node"
+                        paper_id = n.get("paper_id") 
+                        nodes_dict[n_id] = {"id": n_id, "group": label, "name": name, "paper_id": paper_id}
                 
-                # 2. Process Target Node
                 m = record["m"]
                 if m is not None:
                     m_id = str(getattr(m, "element_id", getattr(m, "id", None)))
                     if m_id not in nodes_dict:
                         labels = list(m.labels)
                         label = labels[0] if labels else "Unknown"
-                        name = m.get("title") or m.get("name") or m.get("arxiv_id") or "Node"
-                        arxiv_id = m.get("arxiv_id")
-                        nodes_dict[m_id] = {"id": m_id, "group": label, "name": name, "arxiv_id": arxiv_id}
+                        name = m.get("title") or m.get("name") or m.get("paper_id") or "Node"
+                        paper_id = m.get("paper_id")
+                        nodes_dict[m_id] = {"id": m_id, "group": label, "name": name, "paper_id": paper_id}
                 
-                # 3. Process Relationship
                 r = record["r"]
                 if r is not None:
-                    # Explicitly grab start and end nodes to guarantee the IDs match
                     source_id = str(getattr(r.start_node, "element_id", getattr(r.start_node, "id", None)))
                     target_id = str(getattr(r.end_node, "element_id", getattr(r.end_node, "id", None)))
                     
@@ -275,7 +277,6 @@ async def get_knowledge_map():
                         "label": r.type
                     })
             
-            # De-duplicate links so the physics engine doesn't over-calculate
             unique_links = []
             seen = set()
             for link in links:
@@ -289,11 +290,10 @@ async def get_knowledge_map():
     except Exception as e:
         print(f"Graph Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-import re
 
 class ChatRequest(BaseModel):
     message: str
-    active_paper_id: Optional[str]  = None  # NEW: Tracks what the user is currently looking at
+    active_paper_id: Optional[str] = None
 
 @app.post("/api/v1/chat")
 async def chat_with_graph(req: ChatRequest):
@@ -304,15 +304,14 @@ async def chat_with_graph(req: ChatRequest):
     
     try:
         with driver.session() as session:
-            # SCENARIO A: User is looking at a specific paper in the UI
             if req.active_paper_id:
                 print(f"-> Mode: Targeted Paper Analysis ({req.active_paper_id})")
                 query = """
-                MATCH (p:Paper {arxiv_id: $arxiv_id})
+                MATCH (p:Paper {paper_id: $paper_id})
                 OPTIONAL MATCH (p)-[:TAGGED_WITH]->(k:Keyword)
                 RETURN p.title AS title, p.theory AS theory, p.limitations AS limitations, p.conclusion AS conclusion, collect(k.name) as keywords
                 """
-                result = session.run(query, {"arxiv_id": req.active_paper_id}).single()
+                result = session.run(query, {"paper_id": req.active_paper_id}).single()
                 if result:
                     context_blocks.append(
                         f"FOCUS PAPER: {result['title']}\n"
@@ -322,17 +321,14 @@ async def chat_with_graph(req: ChatRequest):
                         f"Conclusion: {result['conclusion']}\n"
                     )
             
-            # SCENARIO B: Global Graph Search based on the user's question
             else:
                 print("-> Mode: Global Graph Search")
-                # 1. Clean the prompt to extract core keywords
                 stop_words = {"what", "is", "the", "a", "an", "how", "why", "can", "you", "tell", "me", "about", "in", "of", "and", "or", "for", "to"}
                 words = [w.lower() for w in re.sub(r'[^\w\s]', '', req.message).split() if w.lower() not in stop_words]
                 
                 if not words:
-                    words = [""] # Fallback if question is too generic
+                    words = [""] 
                 
-                # 2. Cypher text-search to find relevant papers
                 query = """
                 WITH $words AS searchTerms
                 MATCH (p:Paper)
@@ -358,7 +354,6 @@ async def chat_with_graph(req: ChatRequest):
     compiled_context = "\n---\n".join(context_blocks)
     print(f"-> Retrieved {len(context_blocks)} contextual blocks from Graph.")
 
-    # 3. AUGMENT: Build the strict RAG prompt for Ollama
     system_prompt = f"""You are ResearchBridge AI, an expert academic orchestrator.
 You are assisting a researcher. Answer their question strictly using the CONTEXT provided below.
 If the context contains a "FOCUS PAPER", prioritize that paper heavily.
@@ -371,15 +366,14 @@ USER QUESTION:
 {req.message}
 """
 
-    # 4. GENERATE: Send to local Qwen3
     try:
         ollama_payload = {
             "model": "qwen3:8b", 
             "prompt": system_prompt,
             "stream": False,
             "options": {
-                "temperature": 0.1, # Keep it highly deterministic for academic accuracy
-                "num_ctx": 4096     # Sufficient context window for 5 papers
+                "temperature": 0.1,
+                "num_ctx": 4096    
             }
         }
         
@@ -394,13 +388,14 @@ USER QUESTION:
     except requests.exceptions.RequestException as e:
         print(f"Ollama Error: {e}")
         raise HTTPException(status_code=500, detail="Local LLM is currently unreachable.")
-@app.get("/api/v1/paper/{arxiv_id}")
-async def get_paper_details(arxiv_id: str):
+
+@app.get("/api/v1/paper/{paper_id}")
+async def get_paper_details(paper_id: str):
     """Fetches the full TLC data for a specific paper for the UI Inspector."""
-    print(f"-> Fetching details for paper: {arxiv_id}")
+    print(f"-> Fetching details for paper: {paper_id}")
     
     query = """
-    MATCH (p:Paper {arxiv_id: $arxiv_id})
+    MATCH (p:Paper {paper_id: $paper_id})
     RETURN p.title AS title, 
            p.abstract AS abstract, 
            p.theory AS theory, 
@@ -410,13 +405,13 @@ async def get_paper_details(arxiv_id: str):
     
     try:
         with driver.session() as session:
-            result = session.run(query, {"arxiv_id": arxiv_id}).single()
+            result = session.run(query, {"paper_id": paper_id}).single()
             
             if not result:
                 raise HTTPException(status_code=404, detail="Paper not found in Graph.")
                 
             return {
-                "arxiv_id": arxiv_id,
+                "paper_id": paper_id,
                 "title": result["title"],
                 "abstract": result["abstract"],
                 "theory": result["theory"],
