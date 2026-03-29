@@ -32,14 +32,27 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatHistory]);
 
-  // --- EXISTING LOGIC ---
-  const fetchGraph = async () => {
+  // --- EXISTING LOGIC ---  added fallbacks and error handling to make it more robust for demos
+const fetchGraph = async () => {
     try {
       const res = await fetch('http://localhost:8000/api/v1/graph');
+      
+      // 1. If the backend throws a 500, immediately jump to the catch block
+      if (!res.ok) throw new Error(`Backend error: ${res.status}`);
+      
       const data = await res.json();
-      setGraphData(data);
+      
+      // 2. Double-check that the data actually has nodes and links before saving
+      if (data && data.nodes && data.links) {
+        setGraphData(data);
+      } else {
+        setGraphData({ nodes: [], links: [] });
+      }
+      
     } catch (err) {
       console.error("Failed to load graph:", err);
+      // 3. Fallback: Reset to an empty graph so the UI doesn't crash
+      setGraphData({ nodes: [], links: [] });
     }
   };
 
@@ -66,6 +79,33 @@ function App() {
       setLoading(false);
     }
   };
+
+const handleClearGraph = async () => {
+    // Built-in browser confirmation so you don't accidentally click it during a demo
+    if (!window.confirm("Are you sure you want to delete all papers? This cannot be undone.")) return;
+    
+    setLoading(true);
+    try {
+      const response = await fetch('http://localhost:8000/api/v1/graph/clear', {
+        method: 'DELETE',
+      });
+      
+      if (!response.ok) throw new Error('Failed to clear database');
+      
+      // Reset all UI states to empty
+      setGraphData({ nodes: [], links: [] });
+      setResults([]);
+      setSelectedPaper(null);
+      setChatHistory([
+        { role: 'ai', text: "Graph cleared! I am ready for a new research topic." }
+      ]);
+      
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };  
 
   const getNodeColor = (node) => {
     switch (node.group) {
@@ -121,8 +161,8 @@ function App() {
           </p>
         </header>
 
-        {/* SEARCH FORM */}
-        <form onSubmit={handleSearch} className="flex gap-4 max-w-2xl mx-auto mb-8">
+{/* SEARCH FORM */}
+        <form onSubmit={handleSearch} className="flex gap-4 max-w-3xl mx-auto mb-8">
           <input
             type="text"
             value={query}
@@ -134,9 +174,20 @@ function App() {
           <button
             type="submit"
             disabled={loading}
-            className="px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg shadow-sm hover:bg-indigo-700 disabled:opacity-50"
+            className="px-6 py-3 bg-indigo-600 text-white font-medium rounded-lg shadow-sm hover:bg-indigo-700 disabled:opacity-50 transition-colors"
           >
             {loading ? 'Synthesizing...' : 'Discover gaps'}
+          </button>
+          
+          {/* NEW CLEAR BUTTON */}
+          <button
+            type="button"
+            onClick={handleClearGraph}
+            disabled={loading || graphData?.nodes?.length === 0 || !graphData?.nodes}
+            className="px-4 py-3 bg-red-50 text-red-600 font-medium rounded-lg border border-red-200 hover:bg-red-100 disabled:opacity-50 transition-colors"
+            title="Wipe the current Knowledge Map"
+          >
+            Clear Map
           </button>
         </form>
 
@@ -151,7 +202,7 @@ function App() {
                 <div className="flex items-center gap-2"><span className="w-3 h-3 rounded-full bg-amber-500"></span> Keywords</div>
             </div>
             
-            {graphData.nodes.length > 0 ? (
+            {graphData?.nodes?.length > 0 ? (
                 <ForceGraph2D
                     ref={graphRef}
                     graphData={graphData}
